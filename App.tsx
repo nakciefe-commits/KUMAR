@@ -6,47 +6,81 @@ import { Settlements } from './components/Settlements';
 import { Button, Card, Input } from './components/ui';
 import { LayoutDashboard, PlusCircle, Users, History, Trash2, Calendar, Clock, Handshake, Download, MonitorDown } from 'lucide-react';
 
+// Firebase Imports
+import { db } from './firebase';
+import { 
+  collection, 
+  addDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy 
+} from 'firebase/firestore';
+
 export default function App() {
   const [view, setView] = useState<ViewState>('dashboard');
   const [installPrompt, setInstallPrompt] = useState<any>(null);
   
-  // Initialize state from localStorage or defaults
-  const [players, setPlayers] = useState<Player[]>(() => {
-    const saved = localStorage.getItem('poker_players');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [games, setGames] = useState<GameSession[]>(() => {
-    const saved = localStorage.getItem('poker_games');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem('poker_transactions');
-    return saved ? JSON.parse(saved) : [];
-  });
+  // State definitions (No longer initializing from localStorage)
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [games, setGames] = useState<GameSession[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   const [newPlayerName, setNewPlayerName] = useState('');
 
-  // Persist data
-  useEffect(() => {
-    localStorage.setItem('poker_players', JSON.stringify(players));
-  }, [players]);
+  // ---------------------------------------------------------------------------
+  // FIREBASE LISTENERS (Real-time Data)
+  // ---------------------------------------------------------------------------
 
+  // Listen for Players
   useEffect(() => {
-    localStorage.setItem('poker_games', JSON.stringify(games));
-  }, [games]);
+    const q = query(collection(db, "players"), orderBy("name"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedPlayers = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Player[];
+      setPlayers(loadedPlayers);
+    });
+    return () => unsubscribe();
+  }, []);
 
+  // Listen for Games
   useEffect(() => {
-    localStorage.setItem('poker_transactions', JSON.stringify(transactions));
-  }, [transactions]);
+    // Order games by date descending (newest first)
+    const q = query(collection(db, "games"), orderBy("date", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedGames = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as GameSession[];
+      setGames(loadedGames);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Listen for Transactions
+  useEffect(() => {
+    const q = query(collection(db, "transactions"), orderBy("date", "asc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const loadedTransactions = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Transaction[];
+      setTransactions(loadedTransactions);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // APP LOGIC
+  // ---------------------------------------------------------------------------
 
   // Install Prompt Listener
   useEffect(() => {
     const handler = (e: any) => {
-      // Prevent the mini-infobar from appearing on mobile
       e.preventDefault();
-      // Stash the event so it can be triggered later.
       setInstallPrompt(e);
     };
     window.addEventListener('beforeinstallprompt', handler);
@@ -55,48 +89,74 @@ export default function App() {
 
   const handleInstallApp = async () => {
     if (!installPrompt) return;
-    // Show the install prompt
     installPrompt.prompt();
-    // Wait for the user to respond to the prompt
-    const { outcome } = await installPrompt.userChoice;
-    // We've used the prompt, and can't use it again, discard it
+    await installPrompt.userChoice;
     setInstallPrompt(null);
   };
 
-  const addPlayer = () => {
+  const addPlayer = async () => {
     if (!newPlayerName.trim()) return;
-    const newPlayer: Player = {
-      id: crypto.randomUUID(),
-      name: newPlayerName.trim()
-    };
-    setPlayers([...players, newPlayer]);
-    setNewPlayerName('');
+    try {
+      await addDoc(collection(db, "players"), {
+        name: newPlayerName.trim()
+      });
+      setNewPlayerName('');
+    } catch (e) {
+      console.error("Error adding player: ", e);
+      alert("Oyuncu eklenirken bir hata oluştu.");
+    }
   };
 
-  const removePlayer = (id: string) => {
+  const removePlayer = async (id: string) => {
     if (confirm('Bu oyuncuyu silmek istediğine emin misin? Geçmiş oyun kayıtlarında ismi görünmeye devam edebilir ama hesaplamalar bozulabilir.')) {
-        setPlayers(players.filter(p => p.id !== id));
+        try {
+          await deleteDoc(doc(db, "players", id));
+        } catch (e) {
+          console.error("Error removing player: ", e);
+        }
     }
   };
 
-  const handleSaveGame = (game: GameSession) => {
-    setGames([game, ...games]);
-    setView('dashboard');
+  const handleSaveGame = async (game: GameSession) => {
+    try {
+      // Create a clean object without the ID (Firestore creates the ID)
+      // but keep the internal structure (results array etc.)
+      const { id, ...gameData } = game;
+      await addDoc(collection(db, "games"), gameData);
+      setView('dashboard');
+    } catch (e) {
+      console.error("Error saving game: ", e);
+      alert("Oyun kaydedilemedi.");
+    }
   };
 
-  const deleteGame = (gameId: string) => {
+  const deleteGame = async (gameId: string) => {
     if (confirm('Bu oyun kaydını silmek istiyor musunuz?')) {
-      setGames(games.filter(g => g.id !== gameId));
+      try {
+        await deleteDoc(doc(db, "games", gameId));
+      } catch (e) {
+        console.error("Error deleting game: ", e);
+      }
     }
   };
 
-  const handleAddTransaction = (transaction: Transaction) => {
-    setTransactions([...transactions, transaction]);
+  const handleAddTransaction = async (transaction: Transaction) => {
+    try {
+      const { id, ...tData } = transaction;
+      await addDoc(collection(db, "transactions"), tData);
+    } catch (e) {
+      console.error("Error adding transaction: ", e);
+      alert("İşlem kaydedilemedi.");
+    }
   };
 
-  const handleDeleteTransaction = (id: string) => {
+  const handleDeleteTransaction = async (id: string) => {
     if(confirm('Bu ödeme kaydını silmek istiyor musunuz?')) {
-        setTransactions(transactions.filter(t => t.id !== id));
+        try {
+          await deleteDoc(doc(db, "transactions", id));
+        } catch (e) {
+          console.error("Error deleting transaction: ", e);
+        }
     }
   };
 
@@ -111,12 +171,10 @@ export default function App() {
       game.results.forEach(result => {
         const player = players.find(p => p.id === result.playerId);
         const playerName = player ? player.name : 'Bilinmeyen';
-        // Excel için noktalı virgül kullanıyoruz
         csvContent += `${date};${time};"${playerName}";${result.buyIn};${result.cashOut};${result.net}\n`;
       });
     });
 
-    // Add BOM for Turkish character support in Excel
     const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
